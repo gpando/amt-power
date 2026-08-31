@@ -32,7 +32,7 @@ const soapTemplate = `<?xml version="1.0" encoding="utf-8"?>
   </Header>
   <Body>
     <r:RequestPowerStateChange_INPUT xmlns:r="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_PowerManagementService">
-      <r:PowerState>2</r:PowerState>
+      <r:PowerState>%d</r:PowerState>
       <r:ManagedElement>
         <Address xmlns="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing</Address>
         <ReferenceParameters xmlns="http://schemas.xmlsoap.org/ws/2004/08/addressing">
@@ -97,13 +97,39 @@ func buildDigestAuth(username, password, method, uri string, challenge map[strin
 	)
 }
 
-func powerOnAMT(ip, username, password string, port int) error {
+type powerAction struct {
+	state int
+	desc  string
+}
+
+// powerActions maps CLI action names to DMTF CIM RequestPowerStateChange codes.
+// Codes verified against Intel AMT CIM_PowerManagementService:
+//
+//	2  = Power On
+//	5  = Power Cycle (off hard, then on)
+//	8  = Power Off - Hard
+//	12 = Power Off - Soft Graceful (orderly OS shutdown)
+//	14 = Master Bus Reset Graceful (orderly OS reboot)
+//
+// Graceful actions (12/14) are only honored when the platform advertises them
+// in CIM_AssociatedPowerManagementService.AvailableRequestedPowerStates;
+// otherwise use the -hard variants.
+var powerActions = map[string]powerAction{
+	"on":          {2, "power on"},
+	"off":         {12, "graceful power off (soft)"},
+	"off-hard":    {8, "hard power off"},
+	"reboot":      {14, "graceful reboot (soft reset)"},
+	"reboot-hard": {5, "hard power cycle"},
+}
+
+func requestPowerState(ip, username, password string, port int, act powerAction) error {
 	endpoint := fmt.Sprintf("http://%s:%d/wsman", ip, port)
 	uri := "/wsman"
+	soapBody := fmt.Sprintf(soapTemplate, act.state)
 	client := &http.Client{Timeout: 15 * time.Second}
 
 	// 1. Initial unauthenticated request to obtain 401 challenge
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(soapTemplate))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(soapBody))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -129,7 +155,7 @@ func powerOnAMT(ip, username, password string, port int) error {
 	// 2. Authenticated request with Digest Authorization header
 	authValue := buildDigestAuth(username, password, http.MethodPost, uri, challenge)
 
-	reqAuth, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(soapTemplate))
+	reqAuth, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString(soapBody))
 	if err != nil {
 		return fmt.Errorf("failed to create authenticated request: %w", err)
 	}
@@ -158,7 +184,7 @@ func powerOnAMT(ip, username, password string, port int) error {
 	}
 
 	if returnVal == "0" || returnVal == "4096" {
-		fmt.Printf("Power ON executed successfully on %s (ReturnValue: %s)\n", ip, returnVal)
+		fmt.Printf("%s executed successfully on %s (PowerState=%d, ReturnValue=%s)\n", act.desc, ip, act.state, returnVal)
 		return nil
 	}
 
@@ -169,6 +195,7 @@ func main() {
 	ip := flag.String("ip", "", "Target Intel AMT IP address")
 	user := flag.String("user", "admin", "Intel AMT username")
 	port := flag.Int("port", 16992, "Intel AMT port (default 16992)")
+	action := flag.String("action", "on", "Power action: on, off, off-hard, reboot, reboot-hard (default: on)")
 
 	flag.Parse()
 
@@ -179,12 +206,17 @@ func main() {
 	}
 
 	if *ip == "" {
-		fmt.Println("Usage: AMT_PASSWORD=\"secret\" amt-poweron -ip <IP> [-user admin] [-port 16992]")
-		fmt.Println("HP-MINI-1: 10.0.0.90 | HP-MINI-2: 10.0.0.194")
+		fmt.Println("Usage: AMT_PASSWORD=\"secret\" amt-power -ip <IP> [-action on|off|off-hard|reboot|reboot-hard] [-user admin] [-port 16992]")
 		os.Exit(1)
 	}
 
-	if err := powerOnAMT(*ip, *user, pass, *port); err != nil {
+	act, ok := powerActions[strings.ToLower(*action)]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "Error: invalid action %q (valid: on, off, off-hard, reboot, reboot-hard)\n", *action)
+		os.Exit(1)
+	}
+
+	if err := requestPowerState(*ip, *user, pass, *port, act); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
