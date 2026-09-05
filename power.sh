@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 # power.sh — run amt-power with a user-provided passphrase
 # Change AMT_IP to match your target machine.
 
