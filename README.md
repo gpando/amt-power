@@ -93,6 +93,16 @@ AMT_PASSPHRASE="xxx" amt-power -ip 10.0.0.90 -action off-hard
 AMT_PASSWORD="xxx" amt-power -ip 10.0.0.90
 ```
 
+### Quick Run (shell script)
+
+`power.sh` prompts for the passphrase and runs `amt-power` against a fixed IP
+(set `AMT_IP` at the top of the script to change it):
+
+```bash
+./power.sh              # power on (default)
+./power.sh -action off  # graceful shutdown
+```
+
 ## Build
 
 Run directly from source:
